@@ -1,0 +1,16 @@
+# personal data
+config.json
+flights.json
+flights.backup.json
+flights.tmp.json
+
+# generated: airline logo cache (npm run logos / the server re-downloads them)
+logos/*
+!logos/.gitkeep
+
+# misc
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+.claude/

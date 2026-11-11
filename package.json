@@ -1,0 +1,13 @@
+{
+  "name": "my-flights-board",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local flight departure board with live updates",
+  "scripts": {
+    "start": "node server.js",
+    "logos": "node scripts/fetch-logos.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

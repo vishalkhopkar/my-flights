@@ -1,0 +1,8 @@
+{
+  "ownerEmail": "jane.doe@example.com",
+  "passengers": ["Jane Doe", "John Doe"],
+  "initialLookbackMonths": 12,
+  "timezone": "America/New_York",
+  "includeUnknownPassengers": false,
+  "parallelSubagents": false
+}
