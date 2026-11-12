@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * Flight departure board server. Zero dependencies.
+ * Trips + flight departure board server. Zero dependencies.
  *   node server.js            -> http://localhost:3000   (PORT env to change, ROOT env to serve another folder)
  *
- * Serves an allowlist only: / , /index.html , /css/* , /js/* , /logos/* , /flights.json
- * GET /events is a Server-Sent Events stream that emits `change` when flights.json changes
- * (or when a new airline logo has been cached).
+ * Serves an allowlist only: / (trips, index.html) , /departures (departures.html) ,
+ * /css/* , /js/* , /logos/* , /flights.json , /hotels.json , /transport.json ,
+ * /trips/<name>.json (per-person trip files + index.json; name must match ^[a-z0-9-]+$, no subfolders)
+ * GET /events is a Server-Sent Events stream that emits `change` when flights.json, hotels.json,
+ * transport.json or any file in trips/ changes (or when a new airline logo has been cached).
  */
 
 const http = require('http');
@@ -18,6 +20,10 @@ const ROOT = path.resolve(process.env.ROOT || __dirname);
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = '127.0.0.1';
 const FLIGHTS = path.join(ROOT, 'flights.json');
+const WATCHED = ['flights.json', 'hotels.json', 'transport.json']; // files in ROOT
+const TRIPS_KEY = 'trips/'; // change-detection key for the trips/ folder as a whole
+const TRIPS_DIR = path.join(ROOT, 'trips');
+const TRIPS_FILE_RE = /^[a-z0-9-]+\.json$/;
 const LOGOS = path.join(ROOT, 'logos');
 
 const TYPES = {
@@ -52,11 +58,17 @@ function resolveAllowed(rawPath) {
   try { p = decodeURIComponent(rawPath); } catch (_) { return null; }
   if (p.includes('\0') || p.includes('\\')) return null;
   if (p === '/') p = '/index.html';
+  else if (p === '/departures' || p === '/departures/') p = '/departures.html';
+  else if (p === '/departures.html') return null; // only reachable as /departures
   const segs = p.split('/').slice(1);
   if (segs.some((s) => s === '' || s === '.' || s === '..' || s.startsWith('.'))) return null;
   const allowed =
     p === '/index.html' ||
+    p === '/departures.html' ||
     p === '/flights.json' ||
+    p === '/hotels.json' ||
+    p === '/transport.json' ||
+    (segs.length === 2 && segs[0] === 'trips' && TRIPS_FILE_RE.test(segs[1])) ||
     (segs.length >= 2 && (segs[0] === 'css' || segs[0] === 'js' || segs[0] === 'logos'));
   if (!allowed) return null;
   const abs = path.resolve(ROOT, ...segs);
@@ -175,39 +187,102 @@ async function refreshLogos(reason) {
 
 // ---------------------------------------------------------------- change detection
 
-let lastSig = null;
-let debounceTimer = null;
+const lastSig = Object.create(null);
+const debounceTimers = Object.create(null);
 
-function sigOf(cb) {
-  fs.stat(FLIGHTS, (err, st) => cb(err || !st.isFile() ? null : st.size + ':' + Math.floor(st.mtimeMs)));
+/** Signature of a watched root file (size + mtime), or null when it is missing. */
+function fileSig(name, cb) {
+  fs.stat(path.join(ROOT, name), (err, st) => cb(err || !st.isFile() ? null : st.size + ':' + Math.floor(st.mtimeMs)));
 }
 
-function schedule() {
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    sigOf((sig) => {
-      if (sig === null || sig === lastSig) return; // missing (mid-rename) or unchanged
-      lastSig = sig;
-      log('flights.json changed -> sending change to ' + clients.size + ' client(s)');
+/** Signature of the trips/ folder: every .json entry's name + size + mtime ('' when missing/empty). */
+function tripsSig(cb) {
+  let sig = '';
+  try {
+    const names = fs.readdirSync(TRIPS_DIR).filter((n) => TRIPS_FILE_RE.test(n)).sort();
+    for (const n of names) {
+      try {
+        const st = fs.statSync(path.join(TRIPS_DIR, n));
+        if (st.isFile()) sig += n + ':' + st.size + ':' + Math.floor(st.mtimeMs) + '|';
+      } catch (_) { /* removed mid-scan */ }
+    }
+  } catch (_) { /* folder missing */ }
+  cb(sig);
+}
+
+function sigOf(key, cb) {
+  if (key === TRIPS_KEY) tripsSig(cb);
+  else fileSig(key, cb);
+}
+
+function schedule(key) {
+  clearTimeout(debounceTimers[key]);
+  debounceTimers[key] = setTimeout(() => {
+    sigOf(key, (sig) => {
+      // Root file missing (mid-rename) or nothing changed: stay quiet. For trips/ an empty
+      // signature is a real state (folder removed or emptied), so it is still broadcast.
+      if ((sig === null && key !== TRIPS_KEY) || sig === lastSig[key]) return;
+      lastSig[key] = sig;
+      log(key + ' changed -> sending change to ' + clients.size + ' client(s)');
       broadcast('change', new Date().toISOString());
-      refreshLogos('flights.json changed');
+      if (key === 'flights.json') refreshLogos('flights.json changed');
     });
   }, 150);
 }
 
-function startWatching() {
-  sigOf((sig) => { lastSig = sig; });
+// fs.watch on trips/ itself: created when the folder exists, re-created when it appears later or
+// was replaced by a new folder (different inode), closed when it disappears.
+let tripsWatcher = null;
+let tripsWatchedIno = null;
+
+function closeTripsWatcher() {
+  if (!tripsWatcher) return;
+  try { tripsWatcher.close(); } catch (_) {}
+  tripsWatcher = null;
+  tripsWatchedIno = null;
+}
+
+function ensureTripsWatcher() {
+  let st = null;
+  try { st = fs.statSync(TRIPS_DIR); } catch (_) {}
+  if (!st || !st.isDirectory()) { closeTripsWatcher(); return; }
+  if (tripsWatcher && tripsWatchedIno === st.ino) return;
+  closeTripsWatcher();
   try {
-    // Watch the directory (not the file): editors / atomic renames replace the file's inode.
+    const w = fs.watch(TRIPS_DIR, { persistent: false }, () => schedule(TRIPS_KEY));
+    w.on('error', () => { if (tripsWatcher === w) closeTripsWatcher(); schedule(TRIPS_KEY); });
+    tripsWatcher = w;
+    tripsWatchedIno = st.ino;
+  } catch (_) { /* polling still covers it */ }
+}
+
+function startWatching() {
+  WATCHED.forEach((name) => sigOf(name, (sig) => { lastSig[name] = sig; }));
+  sigOf(TRIPS_KEY, (sig) => { lastSig[TRIPS_KEY] = sig; });
+  ensureTripsWatcher();
+  try {
+    // Watch the directory (not the files): editors / atomic renames replace the file's inode.
     const w = fs.watch(ROOT, { persistent: false }, (_evt, name) => {
-      if (!name || String(name).toLowerCase() === 'flights.json') schedule();
+      const n = name ? String(name).toLowerCase() : null;
+      WATCHED.forEach((f) => { if (!n || n === f) schedule(f); });
+      if (!n || n === 'trips') {
+        // trips/ created, replaced, removed or its contents touched: (re-)establish its own watcher.
+        ensureTripsWatcher();
+        schedule(TRIPS_KEY);
+      }
     });
     w.on('error', (e) => log('fs.watch error (' + e.message + '); relying on polling'));
   } catch (e) {
     log('fs.watch unavailable (' + e.message + '); relying on polling');
   }
-  // Polling fallback: never miss a change.
-  setInterval(() => sigOf((sig) => { if (sig !== null && sig !== lastSig) schedule(); }), 1000);
+  // Polling fallback: never miss a change (and pick up a trips/ folder created later).
+  setInterval(() => {
+    WATCHED.forEach((name) => sigOf(name, (sig) => {
+      if (sig !== null && sig !== lastSig[name]) schedule(name);
+    }));
+    ensureTripsWatcher();
+    sigOf(TRIPS_KEY, (sig) => { if (sig !== lastSig[TRIPS_KEY]) schedule(TRIPS_KEY); });
+  }, 1000);
 }
 
 // ---------------------------------------------------------------- server
@@ -233,7 +308,7 @@ server.on('error', (err) => {
 });
 
 server.listen(PORT, HOST, () => {
-  log('Flight board listening on http://localhost:' + PORT + '  (serving ' + ROOT + ')');
+  log('Trips on http://localhost:' + PORT + '/ , departures on http://localhost:' + PORT + '/departures  (serving ' + ROOT + ')');
   startWatching();
   try { fs.mkdirSync(LOGOS, { recursive: true }); } catch (_) {}
   refreshLogos('startup');

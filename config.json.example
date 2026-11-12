@@ -3,6 +3,9 @@
   "passengers": ["Jane Doe", "John Doe"],
   "initialLookbackMonths": 12,
   "timezone": "America/New_York",
+  "runTimes": { "flight": "08:00", "hotel": "08:30", "transport": "09:00", "combined": "09:30" },
   "includeUnknownPassengers": false,
-  "parallelSubagents": false
+  "parallelSubagents": false,
+  "overnightLayoverMaxHours": 5,
+  "homeLocations": ["New York", "Boston"]
 }
