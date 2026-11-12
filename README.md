@@ -39,31 +39,39 @@ Only an allowlist is served; everything else returns 404 (including `config.json
 | `/logos/*` | `max-age=60` with ETag |
 | `/events` | Server-Sent Events |
 
-## Daily run (Windows)
+## Daily runs (Windows)
 
-`flight-prompt.md` is run in a headless Claude Code session once a day at the local time set by
-`runTimes.flight` in `config.json` (24-hour `HH:mm`, default `08:00`; `runTimes` also holds `hotel` and `transport`, not scheduled yet).
+Four prompts run in headless Claude Code sessions, one scheduled task each, at the local times in `runTimes` in `config.json` (24-hour `HH:mm`; a null time means no task for that job):
+
+| job | prompt | reads | writes | task |
+|---|---|---|---|---|
+| `flight` | `flight-prompt.md` | Gmail (read-only) | `flights.json` | `MyFlightsDailyTracker` |
+| `hotel` | `hotel-prompt.md` | Gmail (read-only) | `hotels.json` | `MyFlightsHotelTracker` |
+| `transport` | `transport-prompt.md` | Gmail (read-only) | `transport.json` | `MyFlightsTransportTracker` |
+| `combined` | `combined-prompt.md` | the three files above (no Gmail) | `trips/` | `MyFlightsCombinedTrips` |
+
+Keep the combined time after the other three: it only rebuilds when one of them logged a successful, changed run that day (or when `trips/` is missing), and otherwise prints `SKIPPED`.
 
 ```powershell
-powershell -File scriptsschedule-daily.ps1               # create / update the scheduled task
-powershell -File scriptsschedule-daily.ps1 -Unregister   # remove it
-Start-ScheduledTask -TaskName MyFlightsDailyTracker        # run it now
+powershell -File scripts\schedule-daily.ps1               # create / update the scheduled tasks
+powershell -File scripts\schedule-daily.ps1 -Unregister   # remove them
+Start-ScheduledTask -TaskName MyFlightsHotelTracker        # run one now
+powershell -File scripts\run-tracker.ps1 -Job hotel        # or run a job directly
+powershell -File scripts\run-tracker.ps1 -Job hotel -CheckOnly   # only validate its current output
 ```
 
-Re-run the schedule script after changing `runTimes.flight`. The task runs only while you are logged on;
-if the PC is off at the set time it runs at the next opportunity.
+Re-run the schedule script after changing `runTimes`. The tasks run only while you are logged on, on the PC's local clock; if the PC is off at the set time a task runs at the next opportunity.
 
 Each run appends a row to `log.csv`:
 
 | column | meaning |
 |---|---|
 | `run_date` | scan start time, UTC |
-| `success` | Claude Code ran and Gmail could be read (`flights.json` came back valid with a fresh `runDate`) |
-| `changed` | the flight data differs from before the run |
-| `type` | kind of run: `flight` or `hotel` |
+| `success` | Claude Code ran and the output came back valid with a fresh timestamp (source jobs: Gmail could be read; combined: also true when it skipped) |
+| `changed` | the data differs from before the run (combined: the trips, ignoring timestamps) |
+| `type` | which job ran: `flight`, `hotel`, `transport` or `combined` |
 
-If a run fails, `flights.json` is restored to what it was before. The full output of the last run is in
-`last-run.txt`. The session is limited to read-only Gmail tools plus writes to the tracker's own files.
+If a run fails, its output is restored to what it was before. The combined job cannot run shell commands: it writes into `trips.tmp/` and the runner validates it (JSON, and every id reference resolves) before swapping it into `trips/`, keeping the old folder as `trips.backup/`. The full output of the last run of each job is in `last-run-<job>.txt`. Each session is limited to read-only Gmail tools (none for combined) plus writes to that job's own files.
 
 ## Files
 
@@ -85,7 +93,7 @@ trips/<name>.json     one traveller's trips, referencing records by { source, id
 config.json           local settings (not served)
 flight-prompt.md, hotel-prompt.md, transport-prompt.md   prompts that update the source files (not served)
 combined-prompt.md    prompt that builds trips/ from the source files (not served)
-scripts/run-tracker.ps1     headless daily run + log.csv row
-scripts/schedule-daily.ps1  registers the daily scheduled task
-log.csv, last-run.txt       run log and last run output (generated)
+scripts/run-tracker.ps1     headless run of one job (-Job flight|hotel|transport|combined) + log.csv row
+scripts/schedule-daily.ps1  registers one scheduled task per job
+log.csv, last-run-<job>.txt  run log and last run output per job (generated)
 ```
