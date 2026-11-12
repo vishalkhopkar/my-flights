@@ -394,6 +394,43 @@
     return row;
   }
 
+  /* Airport names that don't fit loop around continuously, like a ticker (paused on hover).
+   * The track holds the text twice, so when the first copy has scrolled out the second is exactly
+   * where the first started. A ResizeObserver re-measures when a trip is expanded or the layout changes. */
+  var MQ_GAP = 32;   // px between the end of the name and its repeat
+  var MQ_SPEED = 32; // px per second
+
+  var mqObserver = window.ResizeObserver ? new ResizeObserver(function (entries) {
+    entries.forEach(function (en) { fitMarquee(en.target); });
+  }) : null;
+
+  function fitMarquee(box) {
+    var t = box.querySelector('.mq-t');
+    if (!t || !box.clientWidth) return;
+    var w = t.getBoundingClientRect().width;
+    var on = w > box.clientWidth + 2;
+    box.classList.toggle('mq', on);
+    if (on) {
+      var shift = w + MQ_GAP;
+      box.style.setProperty('--mq-gap', MQ_GAP + 'px');
+      box.style.setProperty('--mq-shift', -shift + 'px');
+      box.style.setProperty('--mq-dur', (shift / MQ_SPEED).toFixed(1) + 's');
+    }
+  }
+
+  function marquee(text) {
+    var box = el('span', 'ep-name');
+    box.title = text;
+    var track = el('span', 'mq-track');
+    track.appendChild(el('span', 'mq-t', text));
+    var dup = el('span', 'mq-dup', text); // visual repeat only
+    dup.setAttribute('aria-hidden', 'true');
+    track.appendChild(dup);
+    box.appendChild(track);
+    if (mqObserver) mqObserver.observe(box);
+    return box;
+  }
+
   function endpoint(kind, time, code, name, date, plus) {
     var e = el('div', 'ep ep-' + kind);
     var t = el('span', 'ep-time', time || '—');
@@ -405,7 +442,7 @@
     e.appendChild(t);
     if (code) {
       e.appendChild(el('span', 'ep-code', code));
-      if (name) e.appendChild(el('span', 'ep-name', name));
+      if (name) e.appendChild(marquee(name));
     } else {
       e.appendChild(el('span', 'ep-place', name || '—'));
     }
@@ -639,12 +676,21 @@
     var connByDep = Object.create(null);
     arr(trip.connections).forEach(function (c) { var k = refKey(c.departure); if (k) connByDep[k] = c; });
 
+    // the leg that starts the trip always comes first on its day, before any stay or pickup
+    var firstLeg = null, firstAt = null;
+    segs.forEach(function (s) {
+      if (!s.rec) return;
+      var v = legView(s.source, s.rec);
+      var at = str(v.depDate) + 'T' + (v.depTime || '12:00');
+      if (str(v.depDate) && (firstAt === null || at < firstAt)) { firstAt = at; firstLeg = refKey(s); }
+    });
+
     // legs
     segs.forEach(function (s) {
       var k = refKey(s);
       if (!s.rec) { put(null, '00:00', 0, function () { return missingRow(s, 'block'); }); return; }
       var v = legView(s.source, s.rec);
-      var key = v.depTime || '12:00';
+      var key = k === firstLeg ? ' ' : (v.depTime || '12:00'); // ' ' sorts before any HH:MM
       var conn = connByDep[k];
       if (conn) {
         var warn = '';

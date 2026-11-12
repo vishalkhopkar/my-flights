@@ -573,6 +573,21 @@ ul { padding: 0; list-style: none; }
 .ep-name, .ep-place { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ep-place { font-size: 12px; color: var(--text-2); white-space: normal; margin-top: 2px; }
 
+/* long airport names: continuous looping marquee (set up by fitMarquee in trips.js), paused on hover */
+.ep-name { display: block; max-width: 100%; }
+.mq-track { display: inline-block; white-space: nowrap; }
+.mq-dup { display: none; }
+.ep-name.mq { text-overflow: clip; cursor: default; }
+.ep-name.mq .mq-dup { display: inline-block; margin-left: var(--mq-gap, 32px); }
+.ep-name.mq .mq-track { animation: mq var(--mq-dur, 10s) linear infinite; }
+.ep-name.mq:hover .mq-track { animation-play-state: paused; }
+@keyframes mq {
+  from { transform: translateX(0); }
+  to { transform: translateX(var(--mq-shift, 0)); }
+}
+/* deliberately not disabled under prefers-reduced-motion: the slow scroll is the only way to read the full name
+   (Windows "Show animations: off" turns reduced motion on); hovering pauses it */
+
 /* the segment row: ONE component for every flight and ground leg */
 .seg,
 .stay {
@@ -733,7 +748,7 @@ a.stay-name { color: var(--accent); }
   .seg-meta, .stay-meta { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
   .seg-notes, .stay-notes, .stay-addr, .lt-notes { grid-column: 1 / -1; }
   .seg-ref, .stay-ref { grid-row: 1; grid-column: 3; align-self: center; }
-  .ep-name, .seg-name, .stay-name { white-space: normal; }
+  .seg-name, .stay-name { white-space: normal; }
   .conn { margin-left: 0; }
   .flag { grid-template-columns: 1fr; }
   .flag-head { flex-direction: row; align-items: baseline; gap: 10px; }
